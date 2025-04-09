@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Flood Map Visualization</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        .legend {
+            line-height: 18px;
+            color: #555;
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .legend i {
+            width: 18px;
+            height: 18px;
+            float: left;
+            margin-right: 8px;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+        // Initialize map
+        var map = L.map('map').setView([{{ center_lat }}, {{ center_lon }}], 13);
+
+        // Add OpenStreetMap tile layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Add flood polygons
+        var floodLayer = L.geoJSON({{ flood_geojson|tojson|safe }}, {
+            style: {
+                color: "#ff0000",
+                weight: 2,
+                opacity: 0.6,
+                fillColor: "#ff0000",
+                fillOpacity: 0.3
+            }
+        }).addTo(map);
+
+        // Add legend
+        var legend = L.control({position: 'bottomright'});
+        legend.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'legend');
+            div.innerHTML = '<i style="background: #ff0000"></i> Flood Areas<br>';
+            return div;
+        };
+        legend.addTo(map);
+
+        // Fit map to flood layer bounds
+        map.fitBounds(floodLayer.getBounds());
+    </script>
+</body>
+</html> 

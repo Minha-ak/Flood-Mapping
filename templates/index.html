@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Evacuation Path Finder</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
+  />
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 100vh; width: 100%; }
+    .info-box {
+      padding: 10px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      margin: 10px;
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      box-shadow: 0 0 10px rgba(0,0,0,0.2);
+    }
+    .loading {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      padding: 20px;
+      border-radius: 5px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.2);
+      z-index: 1000;
+    }
+    .custom-div-icon {
+      background: none;
+      border: none;
+    }
+    .custom-div-icon div {
+      width: 20px;
+      height: 20px;
+      text-align: center;
+      line-height: 20px;
+      color: white;
+      font-weight: bold;
+    }
+    .error-box {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      padding: 20px;
+      border: 2px solid red;
+      border-radius: 5px;
+      z-index: 2000;
+      max-width: 80%;
+      text-align: center;
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+    .debug-info {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: white;
+      padding: 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="info-box">
+    <h3>Instructions:</h3>
+    <p>1. Click on the map to set your starting point</p>
+    <p>2. Click again to set your ending point</p>
+    <p>3. The system will calculate the safest evacuation route</p>
+    <p><small>Note: Routes avoid flooded areas</small></p>
+    <button id="refreshData" style="margin-top: 10px; padding: 5px 10px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Refresh Data</button>
+  </div>
+  <div id="loading" class="loading">Calculating route...</div>
+  <div id="error-box" class="error-box">
+    <h3 style="color:red">Error Loading Map</h3>
+    <p id="error-message">Something went wrong initializing the map.</p>
+    <button onclick="location.reload()">Reload Page</button>
+  </div>
+  <div class="debug-info" id="debug-info">Loading map...</div>
+  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      console.log("Initializing map...");
+      
+      // Get bounding box from server
+      fetch('/bbox')
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            throw new Error(data.error);
+          }
+          
+          const bounds = L.latLngBounds(
+            [data.min[1], data.min[0]],
+            [data.max[1], data.max[0]]
+          );
+          
+          // Create map
+          const map = L.map('map', {
+            center: bounds.getCenter(),
+            zoom: 12,
+            minZoom: 5,
+            maxZoom: 19
+          });
+          
+          // Add tile layer
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          }).addTo(map);
+          
+          // Set bounds
+          map.fitBounds(bounds);
+          
+          // Load flood area
+          fetch('/flood_area')
+            .then(res => res.json())
+            .then(data => {
+              L.geoJSON(data, {
+                style: {
+                  color: '#ff0000',
+                  weight: 2,
+                  opacity: 0.5,
+                  fillOpacity: 0.2
+                }
+              }).addTo(map);
+            })
+            .catch(error => {
+              console.error("Error loading flood area:", error);
+            });
+          
+          let startMarker, endMarker;
+          let routeLayer;
+          let clickCount = 0;
+          
+          map.on('click', function(e) {
+            clickCount++;
+            const coord = [e.latlng.lat, e.latlng.lng];
+            
+            if (routeLayer) {
+              map.removeLayer(routeLayer);
+            }
+            
+            if (clickCount === 1) {
+              if (startMarker) map.removeLayer(startMarker);
+              startMarker = L.marker(coord, {
+                icon: L.divIcon({
+                  className: 'custom-div-icon',
+                  html: "<div style='background-color:#4CAF50;padding:5px;border-radius:50%'>S</div>",
+                })
+              }).addTo(map).bindPopup('Start Point').openPopup();
+            } else if (clickCount === 2) {
+              if (endMarker) map.removeLayer(endMarker);
+              endMarker = L.marker(coord, {
+                icon: L.divIcon({
+                  className: 'custom-div-icon',
+                  html: "<div style='background-color:#f44336;padding:5px;border-radius:50%'>E</div>",
+                })
+              }).addTo(map).bindPopup('End Point').openPopup();
+              document.getElementById('loading').style.display = 'block';
+              fetchRoute(startMarker.getLatLng(), endMarker.getLatLng());
+              clickCount = 0;
+            }
+          });
+          
+          function fetchRoute(start, end) {
+            fetch('/route', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                start: { lat: start.lat, lng: start.lng }, 
+                end: { lat: end.lat, lng: end.lng } 
+              })
+            })
+            .then(res => res.json())
+            .then(data => {
+              document.getElementById('loading').style.display = 'none';
+              if (data.error) {
+                alert(data.error);
+                return;
+              }
+              if (routeLayer) {
+                map.removeLayer(routeLayer);
+              }
+              routeLayer = L.geoJSON(data, { 
+                style: { 
+                  color: '#0000ff', 
+                  weight: 5, 
+                  opacity: 0.8,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                  dashArray: '1,10'
+                }
+              }).addTo(map);
+              map.fitBounds(routeLayer.getBounds());
+            })
+            .catch(error => {
+              document.getElementById('loading').style.display = 'none';
+              console.error('Error:', error);
+              alert('Error calculating route. Please try again.');
+            });
+          }
+          
+          // Add refresh button functionality
+          document.getElementById('refreshData').addEventListener('click', function() {
+            this.disabled = true;
+            this.textContent = 'Refreshing...';
+            fetch('/refresh_data', {
+              method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+              if (data.status === 'success') {
+                alert('Data refreshed successfully! Please refresh the page.');
+              } else {
+                alert('Error refreshing data: ' + data.message);
+              }
+            })
+            .catch(error => {
+              alert('Error refreshing data: ' + error);
+            })
+            .finally(() => {
+              this.disabled = false;
+              this.textContent = 'Refresh Data';
+            });
+          });
+          
+          // Update debug info
+          document.getElementById('debug-info').innerHTML = `
+            Map Center: ${bounds.getCenter().lat.toFixed(6)}, ${bounds.getCenter().lng.toFixed(6)}<br>
+            Bounds: ${bounds.getSouthWest().lat.toFixed(6)}, ${bounds.getSouthWest().lng.toFixed(6)} to ${bounds.getNorthEast().lat.toFixed(6)}, ${bounds.getNorthEast().lng.toFixed(6)}<br>
+            Status: Map loaded successfully
+          `;
+        })
+        .catch(error => {
+          console.error("Error initializing map:", error);
+          document.getElementById('error-box').style.display = 'block';
+          document.getElementById('error-message').innerText = error.message;
+          document.getElementById('debug-info').innerHTML = "Error: " + error.message;
+        });
+    });
+  </script>
+</body>
+</html> 
